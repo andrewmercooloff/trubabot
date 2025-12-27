@@ -100,9 +100,12 @@ def download_video_segment(url: str, start_time: str, end_time: str) -> Path | N
     # Опции для yt-dlp - пытаемся скачать только нужный фрагмент
     # download_sections работает с форматами, которые поддерживают сегментированную загрузку
     ydl_opts = {
-        'format': 'bv+ba/b',  # Лучшее видео + лучшее аудио
+        # Используем лучший видео формат (без ограничений) + лучшее аудио
+        # bv* - лучшее видео любого формата, ba* - лучшее аудио
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
         'outtmpl': str(output_path) + '.%(ext)s',
-        'merge_output_format': 'mp4',  # Используем mp4 для совместимости с мобильными устройствами
+        # Не указываем merge_output_format, чтобы сохранить исходное качество
+        # Будем перекодировать в MP4 через ffmpeg с сохранением качества
         'download_sections': f'*{start_time}-{end_time}',  # Пытаемся скачать только сегмент
         'quiet': False,
         'no_warnings': False,
@@ -193,10 +196,10 @@ def download_video_segment(url: str, start_time: str, end_time: str) -> Path | N
                             '-ss', start_time,
                             '-t', str(duration),
                             '-c:v', 'libx264',
-                            '-preset', 'medium',
-                            '-crf', '18',
+                            '-preset', 'slow',
+                            '-crf', '15',  # Очень высокое качество
                             '-c:a', 'aac',
-                            '-b:a', '192k',
+                            '-b:a', '256k',  # Высокий битрейт аудио
                             '-movflags', '+faststart',
                             '-pix_fmt', 'yuv420p',
                             '-y',
@@ -217,10 +220,10 @@ def download_video_segment(url: str, start_time: str, end_time: str) -> Path | N
                 'ffmpeg',
                 '-i', str(expected_path),
                 '-c:v', 'libx264',
-                '-preset', 'medium',
-                '-crf', '18',
+                '-preset', 'slow',  # Медленнее, но лучше качество
+                '-crf', '15',  # Очень высокое качество (почти без потерь)
                 '-c:a', 'aac',
-                '-b:a', '192k',
+                '-b:a', '256k',  # Высокий битрейт аудио
                 '-movflags', '+faststart',
                 '-pix_fmt', 'yuv420p',
                 '-y',
