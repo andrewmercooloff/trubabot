@@ -131,12 +131,12 @@ def download_video_segment(url: str, start_time: str, end_time: str) -> Path | N
         expected_path = output_path.with_suffix('.mp4')
         if expected_path.exists():
             file_size = expected_path.stat().st_size
-            logger.info(f"Фрагмент скачан напрямую: {expected_path}, размер: {file_size / 1024 / 1024:.2f} MB")
+            logger.info(f"Файл скачан: {expected_path}, размер: {file_size / 1024 / 1024:.2f} MB")
             
             # Проверяем размер - если файл слишком большой, значит скачался весь файл
-            # Примерно: 30 секунд видео в максимальном качестве должно быть < 100 MB
-            # Если файл > 500 MB, вероятно скачался весь файл
-            if file_size > 500 * 1024 * 1024:  # Больше 500 MB
+            # Примерно: 10 секунд видео в максимальном качестве должно быть < 50 MB
+            # Если файл > 100 MB, вероятно скачался весь файл (для 10 секунд это точно много)
+            if file_size > 100 * 1024 * 1024:  # Больше 100 MB - явно весь файл
                 logger.warning(f"Файл слишком большой ({file_size / 1024 / 1024:.2f} MB), возможно скачался весь файл")
                 logger.info("Обрезаю и перекодирую через ffmpeg для совместимости...")
                 # Обрезаем и перекодируем через ffmpeg в совместимый формат
