@@ -367,10 +367,24 @@ async def receive_end_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e)
         logger.error(f"Ошибка yt-dlp: {error_msg}")
-        await status_msg.edit_text(
-            f"❌ Ошибка при скачивании:\n{error_msg[:200]}\n\n"
-            f"Проверьте URL и попробуйте еще раз."
-        )
+        
+        # Специальная обработка ошибки с подтверждением от YouTube
+        if "Sign in to confirm you're not a bot" in error_msg or "bot" in error_msg.lower():
+            await status_msg.edit_text(
+                f"❌ YouTube временно заблокировал запрос.\n\n"
+                f"Попробуйте:\n"
+                f"• Подождать несколько минут\n"
+                f"• Использовать другой URL\n"
+                f"• Попробовать позже\n\n"
+                f"Это временная проблема, обычно решается сама."
+            )
+        else:
+            # Обрезаем длинные сообщения об ошибках
+            short_error = error_msg[:300] if len(error_msg) > 300 else error_msg
+            await status_msg.edit_text(
+                f"❌ Ошибка при скачивании:\n{short_error}\n\n"
+                f"Проверьте URL и попробуйте еще раз."
+            )
     except Exception as e:
         logger.error(f"Неожиданная ошибка: {e}", exc_info=True)
         await status_msg.edit_text(
