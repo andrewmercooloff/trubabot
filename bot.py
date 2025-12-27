@@ -150,10 +150,10 @@ def download_video_segment(url: str, start_time: str, end_time: str) -> Path | N
                     '-ss', start_time,
                     '-t', str(duration),
                     '-c:v', 'libx264',  # Перекодируем видео в H.264
-                    '-preset', 'medium',
-                    '-crf', '18',  # Высокое качество
+                    '-preset', 'slow',  # Медленнее, но лучше качество
+                    '-crf', '15',  # Очень высокое качество (почти без потерь)
                     '-c:a', 'aac',  # Перекодируем аудио в AAC
-                    '-b:a', '192k',
+                    '-b:a', '256k',  # Высокий битрейт аудио для лучшего качества
                     '-movflags', '+faststart',  # Для стриминга и мобильных устройств
                     '-pix_fmt', 'yuv420p',  # Совместимость с iPhone и другими устройствами
                     '-y',
@@ -255,7 +255,7 @@ def download_video_segment(url: str, start_time: str, end_time: str) -> Path | N
                     '-preset', 'medium',
                     '-crf', '18',
                     '-c:a', 'aac',
-                    '-b:a', '192k',
+                    '-b:a', '256k',  # Высокий битрейт аудио для лучшего качества
                     '-movflags', '+faststart',
                     '-pix_fmt', 'yuv420p',
                     '-y',
