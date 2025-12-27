@@ -1,0 +1,19 @@
+# Альтернативный вариант, если основной не работает
+# Переименуйте этот файл в nixpacks.toml
+
+[providers]
+python = "311"
+
+[phases.setup]
+nixPkgs = ["python311", "ffmpeg"]
+
+[phases.install]
+cmds = [
+  "curl -sSL https://bootstrap.pypa.io/get-pip.py -o get-pip.py",
+  "python3 get-pip.py",
+  "pip3 install -r requirements.txt"
+]
+
+[start]
+cmd = "python3 bot.py"
+
