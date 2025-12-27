@@ -102,7 +102,7 @@ def download_video_segment(url: str, start_time: str, end_time: str) -> Path | N
     ydl_opts = {
         'format': 'bv+ba/b',  # Лучшее видео + лучшее аудио
         'outtmpl': str(output_path) + '.%(ext)s',
-        'merge_output_format': 'mkv',  # Используем mkv для лучшей совместимости
+        'merge_output_format': 'mp4',  # Используем mp4 для совместимости с мобильными устройствами
         'download_sections': f'*{start_time}-{end_time}',  # Пытаемся скачать только сегмент
         'quiet': False,
         'no_warnings': False,
@@ -119,8 +119,8 @@ def download_video_segment(url: str, start_time: str, end_time: str) -> Path | N
         logger.info(f"Скачивание завершено, ищу файл: {output_path}")
         
         # Проверяем, что файл создан (yt-dlp может добавить расширение)
-        # Сначала проверяем mkv (merge_output_format)
-        expected_path = output_path.with_suffix('.mkv')
+        # Сначала проверяем mp4 (merge_output_format)
+        expected_path = output_path.with_suffix('.mp4')
         if expected_path.exists():
             file_size = expected_path.stat().st_size
             logger.info(f"Фрагмент скачан напрямую: {expected_path}, размер: {file_size / 1024 / 1024:.2f} MB")
@@ -130,34 +130,88 @@ def download_video_segment(url: str, start_time: str, end_time: str) -> Path | N
             # Если файл > 500 MB, вероятно скачался весь файл
             if file_size > 500 * 1024 * 1024:  # Больше 500 MB
                 logger.warning(f"Файл слишком большой ({file_size / 1024 / 1024:.2f} MB), возможно скачался весь файл")
-                logger.info("Обрезаю через ffmpeg...")
-                # Обрезаем через ffmpeg
+                logger.info("Обрезаю и перекодирую через ffmpeg для совместимости...")
+                # Обрезаем и перекодируем через ffmpeg в совместимый формат
                 final_path = DOWNLOAD_DIR / f"video_{safe_timestamp}.mp4"
                 ffmpeg_cmd = [
                     'ffmpeg',
                     '-i', str(expected_path),
                     '-ss', start_time,
                     '-t', str(duration),
-                    '-c', 'copy',
-                    '-avoid_negative_ts', 'make_zero',
+                    '-c:v', 'libx264',  # Перекодируем видео в H.264
+                    '-preset', 'medium',
+                    '-crf', '18',  # Высокое качество
+                    '-c:a', 'aac',  # Перекодируем аудио в AAC
+                    '-b:a', '192k',
+                    '-movflags', '+faststart',  # Для стриминга и мобильных устройств
+                    '-pix_fmt', 'yuv420p',  # Совместимость с iPhone и другими устройствами
                     '-y',
                     str(final_path)
                 ]
-                result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=300)
+                result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=600)
                 if result.returncode == 0 and final_path.exists():
                     expected_path.unlink()  # Удаляем большой файл
-                    logger.info(f"Фрагмент обрезан: {final_path}")
+                    logger.info(f"Фрагмент обрезан и перекодирован: {final_path}")
                     return final_path
+                else:
+                    logger.error(f"Ошибка при перекодировании: {result.stderr}")
             
-            return expected_path
+            # Если файл нормального размера, все равно перекодируем для совместимости
+            logger.info("Перекодирую в совместимый формат для мобильных устройств...")
+            final_path = DOWNLOAD_DIR / f"video_{safe_timestamp}_final.mp4"
+            ffmpeg_cmd = [
+                'ffmpeg',
+                '-i', str(expected_path),
+                '-c:v', 'libx264',  # H.264 для совместимости
+                '-preset', 'medium',
+                '-crf', '18',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-movflags', '+faststart',
+                '-pix_fmt', 'yuv420p',  # Обязательно для iPhone
+                '-y',
+                str(final_path)
+            ]
+            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=600)
+            if result.returncode == 0 and final_path.exists():
+                expected_path.unlink()  # Удаляем исходный файл
+                logger.info(f"Фрагмент перекодирован: {final_path}")
+                return final_path
+            else:
+                logger.warning(f"Перекодирование не удалось, используем исходный файл: {result.stderr}")
+                return expected_path
         
-        # Ищем файл с любым расширением
-        for ext in ['.mkv', '.mp4', '.webm', '.m4a']:
+        # Ищем файл с любым расширением и перекодируем в совместимый формат
+        for ext in ['.mp4', '.mkv', '.webm', '.m4a']:
             alt_path = output_path.with_suffix(ext)
             if alt_path.exists():
                 file_size = alt_path.stat().st_size
                 logger.info(f"Найден файл: {alt_path}, размер: {file_size / 1024 / 1024:.2f} MB")
-                return alt_path
+                
+                # Перекодируем в совместимый MP4 формат
+                final_path = DOWNLOAD_DIR / f"video_{safe_timestamp}_final.mp4"
+                logger.info("Перекодирую в совместимый формат для мобильных устройств...")
+                ffmpeg_cmd = [
+                    'ffmpeg',
+                    '-i', str(alt_path),
+                    '-c:v', 'libx264',
+                    '-preset', 'medium',
+                    '-crf', '18',
+                    '-c:a', 'aac',
+                    '-b:a', '192k',
+                    '-movflags', '+faststart',
+                    '-pix_fmt', 'yuv420p',
+                    '-y',
+                    str(final_path)
+                ]
+                result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=600)
+                if result.returncode == 0 and final_path.exists():
+                    alt_path.unlink()  # Удаляем исходный файл
+                    logger.info(f"Файл перекодирован: {final_path}")
+                    return final_path
+                else:
+                    logger.warning(f"Перекодирование не удалось: {result.stderr}")
+                    return alt_path
         
         # Ищем файлы, начинающиеся с нашего имени
         found_files = list(DOWNLOAD_DIR.glob(f"video_{safe_timestamp}*"))
