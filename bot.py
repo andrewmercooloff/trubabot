@@ -84,126 +84,93 @@ def is_valid_youtube_url(text: str) -> bool:
 def download_video_segment(url: str, start_time: str, end_time: str) -> Path | None:
     """
     Скачивает фрагмент видео с YouTube
-    Использует ограничение качества и ffmpeg для обрезки
+    Пытается использовать download_sections для скачивания только нужного фрагмента
     """
     import subprocess
     
     # Формируем имя файла (безопасное для файловой системы)
     safe_timestamp = f"{start_time.replace(':', '-')}_{end_time.replace(':', '-')}"
-    temp_path = DOWNLOAD_DIR / f"temp_{safe_timestamp}"
-    output_path = DOWNLOAD_DIR / f"video_{safe_timestamp}.mp4"
+    output_path = DOWNLOAD_DIR / f"video_{safe_timestamp}"
     
-    # Опции для yt-dlp - максимальное качество
+    # Вычисляем длительность для download_sections
+    start_seconds = sum(int(x) * 60 ** (2 - i) for i, x in enumerate(start_time.split(':')))
+    end_seconds = sum(int(x) * 60 ** (2 - i) for i, x in enumerate(end_time.split(':')))
+    duration = end_seconds - start_seconds
+    
+    # Опции для yt-dlp - пытаемся скачать только нужный фрагмент
+    # download_sections работает с форматами, которые поддерживают сегментированную загрузку
     ydl_opts = {
         'format': 'bv+ba/b',  # Лучшее видео + лучшее аудио
-        'outtmpl': str(temp_path) + '.%(ext)s',
+        'outtmpl': str(output_path) + '.%(ext)s',
+        'merge_output_format': 'mkv',  # Используем mkv для лучшей совместимости
+        'download_sections': f'*{start_time}-{end_time}',  # Пытаемся скачать только сегмент
         'quiet': False,
         'no_warnings': False,
         'extract_flat': False,
     }
     
     try:
-        logger.info(f"Начинаю скачивание: URL={url}, сегмент={start_time}-{end_time}")
+        logger.info(f"Пытаюсь скачать только фрагмент: URL={url}, сегмент={start_time}-{end_time}")
         
-        # Сначала скачиваем видео (может быть весь файл, но с ограниченным качеством)
+        # Пытаемся скачать только нужный фрагмент
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         
-        logger.info(f"Скачивание завершено, ищу временный файл: {temp_path}")
+        logger.info(f"Скачивание завершено, ищу файл: {output_path}")
         
-        # Ищем скачанный файл
-        temp_file = None
-        for ext in ['.mp4', '.mkv', '.webm', '.m4a', '.flv']:
-            test_path = temp_path.with_suffix(ext)
-            if test_path.exists():
-                temp_file = test_path
-                logger.info(f"Найден временный файл: {temp_file}")
-                break
+        # Проверяем, что файл создан (yt-dlp может добавить расширение)
+        # Сначала проверяем mkv (merge_output_format)
+        expected_path = output_path.with_suffix('.mkv')
+        if expected_path.exists():
+            file_size = expected_path.stat().st_size
+            logger.info(f"Фрагмент скачан напрямую: {expected_path}, размер: {file_size / 1024 / 1024:.2f} MB")
+            
+            # Проверяем размер - если файл слишком большой, значит скачался весь файл
+            # Примерно: 30 секунд видео в максимальном качестве должно быть < 100 MB
+            # Если файл > 500 MB, вероятно скачался весь файл
+            if file_size > 500 * 1024 * 1024:  # Больше 500 MB
+                logger.warning(f"Файл слишком большой ({file_size / 1024 / 1024:.2f} MB), возможно скачался весь файл")
+                logger.info("Обрезаю через ffmpeg...")
+                # Обрезаем через ffmpeg
+                final_path = DOWNLOAD_DIR / f"video_{safe_timestamp}.mp4"
+                ffmpeg_cmd = [
+                    'ffmpeg',
+                    '-i', str(expected_path),
+                    '-ss', start_time,
+                    '-t', str(duration),
+                    '-c', 'copy',
+                    '-avoid_negative_ts', 'make_zero',
+                    '-y',
+                    str(final_path)
+                ]
+                result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=300)
+                if result.returncode == 0 and final_path.exists():
+                    expected_path.unlink()  # Удаляем большой файл
+                    logger.info(f"Фрагмент обрезан: {final_path}")
+                    return final_path
+            
+            return expected_path
         
-        # Ищем файлы, начинающиеся с temp_
-        if not temp_file:
-            found_files = list(DOWNLOAD_DIR.glob(f"temp_{safe_timestamp}*"))
-            if found_files:
-                temp_file = found_files[0]
-                logger.info(f"Найден временный файл: {temp_file}")
+        # Ищем файл с любым расширением
+        for ext in ['.mkv', '.mp4', '.webm', '.m4a']:
+            alt_path = output_path.with_suffix(ext)
+            if alt_path.exists():
+                file_size = alt_path.stat().st_size
+                logger.info(f"Найден файл: {alt_path}, размер: {file_size / 1024 / 1024:.2f} MB")
+                return alt_path
         
-        if not temp_file or not temp_file.exists():
-            logger.error(f"Временный файл не найден: {temp_path}")
-            return None
+        # Ищем файлы, начинающиеся с нашего имени
+        found_files = list(DOWNLOAD_DIR.glob(f"video_{safe_timestamp}*"))
+        logger.info(f"Найдено файлов с паттерном: {len(found_files)}")
+        for file in found_files:
+            if file.is_file():
+                file_size = file.stat().st_size
+                logger.info(f"Найден файл: {file}, размер: {file_size / 1024 / 1024:.2f} MB")
+                return file
         
-        # Используем ffmpeg для обрезки фрагмента
-        logger.info(f"Обрезаю видео с {start_time} до {end_time}...")
-        
-        # Вычисляем длительность
-        start_seconds = sum(int(x) * 60 ** (2 - i) for i, x in enumerate(start_time.split(':')))
-        end_seconds = sum(int(x) * 60 ** (2 - i) for i, x in enumerate(end_time.split(':')))
-        duration = end_seconds - start_seconds
-        
-        # Команда ffmpeg для обрезки
-        # Сначала пробуем копировать потоки без перекодирования (быстро, без потери качества)
-        ffmpeg_cmd = [
-            'ffmpeg',
-            '-i', str(temp_file),
-            '-ss', start_time,
-            '-t', str(duration),
-            '-c', 'copy',  # Копируем потоки без перекодирования - сохраняет качество и быстро
-            '-avoid_negative_ts', 'make_zero',
-            '-y',  # Перезаписывать выходной файл
-            str(output_path)
-        ]
-        
-        result = subprocess.run(
-            ffmpeg_cmd,
-            capture_output=True,
-            text=True,
-            timeout=300  # Таймаут 5 минут
-        )
-        
-        if result.returncode != 0:
-            logger.warning(f"Копирование потоков не удалось: {result.stderr}")
-            logger.info("Пробую с перекодированием для совместимости с MP4...")
-            # Если копирование не сработало (несовместимые форматы), перекодируем
-            # Используем высокое качество: crf 18 (почти без потерь)
-            ffmpeg_cmd_reencode = [
-                'ffmpeg',
-                '-i', str(temp_file),
-                '-ss', start_time,
-                '-t', str(duration),
-                '-c:v', 'libx264',
-                '-preset', 'medium',  # Баланс между скоростью и качеством
-                '-crf', '18',  # Высокое качество (18 - почти без потерь, 23 - стандартное)
-                '-c:a', 'aac',
-                '-b:a', '192k',  # Высокий битрейт аудио
-                '-movflags', '+faststart',  # Для стриминга
-                '-y',
-                str(output_path)
-            ]
-            result = subprocess.run(
-                ffmpeg_cmd_reencode,
-                capture_output=True,
-                text=True,
-                timeout=600  # Увеличиваем таймаут для перекодирования
-            )
-            if result.returncode != 0:
-                logger.error(f"Ошибка ffmpeg с перекодированием: {result.stderr}")
-                return None
-            else:
-                logger.info("Видео перекодировано в MP4 с высоким качеством")
-        
-        # Удаляем временный файл
-        try:
-            temp_file.unlink()
-            logger.info(f"Временный файл удален: {temp_file}")
-        except Exception as e:
-            logger.warning(f"Не удалось удалить временный файл: {e}")
-        
-        if output_path.exists():
-            file_size = output_path.stat().st_size
-            logger.info(f"Фрагмент создан: {output_path}, размер: {file_size / 1024 / 1024:.2f} MB")
-            return output_path
-        else:
-            logger.error(f"Выходной файл не создан: {output_path}")
-            return None
+        logger.warning(f"Файл не найден после скачивания. Искал: {output_path}")
+        logger.warning(f"Содержимое директории downloads: {list(DOWNLOAD_DIR.iterdir())}")
+        return None
             
     except subprocess.TimeoutExpired:
         logger.error("Таймаут при обрезке видео")
