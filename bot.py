@@ -168,75 +168,110 @@ def download_video_segment(url: str, start_time: str, end_time: str) -> Path | N
                     logger.error(f"Ошибка при перекодировании: {result.stderr}")
             
             # Если файл нормального размера, проверяем длительность через ffprobe
-            logger.info("Проверяю длительность файла...")
+            logger.info("Проверяю длительность и формат файла...")
             
-            # Проверяем длительность через ffprobe
+            # Проверяем длительность и кодек через ffprobe
             probe_cmd = [
                 'ffprobe',
                 '-v', 'error',
+                '-select_streams', 'v:0',
+                '-show_entries', 'stream=codec_name,width,height,duration',
                 '-show_entries', 'format=duration',
-                '-of', 'default=noprint_wrappers=1:nokey=1',
+                '-of', 'json',
                 str(expected_path)
             ]
             probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
             
+            needs_reencode = True
             if probe_result.returncode == 0:
+                import json
                 try:
-                    actual_duration = float(probe_result.stdout.strip())
-                    logger.info(f"Длительность файла: {actual_duration:.2f} секунд, ожидалось: {duration} секунд")
+                    probe_data = json.loads(probe_result.stdout)
+                    video_stream = probe_data.get('streams', [{}])[0]
+                    format_info = probe_data.get('format', {})
                     
-                    # Если длительность намного больше ожидаемой (больше чем в 2 раза), значит скачался весь файл
+                    codec = video_stream.get('codec_name', '')
+                    actual_duration = float(format_info.get('duration', 0))
+                    
+                    logger.info(f"Кодек: {codec}, Длительность: {actual_duration:.2f}s, Ожидалось: {duration}s")
+                    
+                    # Если длительность намного больше ожидаемой, значит скачался весь файл
                     if actual_duration > duration * 2:
                         logger.warning(f"Файл слишком длинный ({actual_duration:.2f}s vs {duration}s), обрезаю...")
-                        # Обрезаем файл
+                        # Обрезаем файл, но сначала пробуем копирование без перекодирования
                         final_path = DOWNLOAD_DIR / f"video_{safe_timestamp}_final.mp4"
-                        ffmpeg_cmd = [
+                        
+                        # Пробуем обрезать с копированием потоков (без перекодирования)
+                        ffmpeg_cmd_copy = [
                             'ffmpeg',
                             '-i', str(expected_path),
                             '-ss', start_time,
                             '-t', str(duration),
-                            '-c:v', 'libx264',
-                            '-preset', 'slow',
-                            '-crf', '15',  # Очень высокое качество
-                            '-c:a', 'aac',
-                            '-b:a', '256k',  # Высокий битрейт аудио
-                            '-movflags', '+faststart',
-                            '-pix_fmt', 'yuv420p',
+                            '-c', 'copy',  # Копируем без перекодирования
+                            '-avoid_negative_ts', 'make_zero',
                             '-y',
                             str(final_path)
                         ]
-                        result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=600)
+                        result = subprocess.run(ffmpeg_cmd_copy, capture_output=True, text=True, timeout=300)
                         if result.returncode == 0 and final_path.exists():
                             expected_path.unlink()
-                            logger.info(f"Фрагмент обрезан: {final_path}")
+                            logger.info(f"Фрагмент обрезан без перекодирования: {final_path}")
                             return final_path
-                except (ValueError, AttributeError):
-                    logger.warning("Не удалось определить длительность файла")
+                        else:
+                            logger.warning(f"Копирование не удалось, перекодирую: {result.stderr}")
+                    
+                    # Проверяем, нужна ли перекодировка для совместимости
+                    # Если кодек уже H.264 и формат MP4, можно попробовать без перекодирования
+                    if codec == 'h264' and expected_path.suffix == '.mp4':
+                        logger.info("Файл уже в H.264/MP4, проверяю совместимость...")
+                        # Проверяем pix_fmt
+                        pix_fmt_cmd = [
+                            'ffprobe',
+                            '-v', 'error',
+                            '-select_streams', 'v:0',
+                            '-show_entries', 'stream=pix_fmt',
+                            '-of', 'default=noprint_wrappers=1:nokey=1',
+                            str(expected_path)
+                        ]
+                        pix_result = subprocess.run(pix_fmt_cmd, capture_output=True, text=True, timeout=10)
+                        if pix_result.returncode == 0:
+                            pix_fmt = pix_result.stdout.strip()
+                            logger.info(f"Pix_fmt: {pix_fmt}")
+                            # Если yuv420p или yuv420p10le, можно использовать без перекодирования
+                            if pix_fmt in ['yuv420p', 'yuv420p10le']:
+                                logger.info("Файл совместим, используем без перекодирования")
+                                needs_reencode = False
+                except (ValueError, KeyError, json.JSONDecodeError) as e:
+                    logger.warning(f"Не удалось проанализировать файл: {e}")
             
-            # Перекодируем для совместимости (если длительность нормальная)
-            logger.info("Перекодирую в совместимый формат для мобильных устройств...")
-            final_path = DOWNLOAD_DIR / f"video_{safe_timestamp}_final.mp4"
-            ffmpeg_cmd = [
-                'ffmpeg',
-                '-i', str(expected_path),
-                '-c:v', 'libx264',
-                '-preset', 'slow',  # Медленнее, но лучше качество
-                '-crf', '15',  # Очень высокое качество (почти без потерь)
-                '-c:a', 'aac',
-                '-b:a', '256k',  # Высокий битрейт аудио
-                '-movflags', '+faststart',
-                '-pix_fmt', 'yuv420p',
-                '-y',
-                str(final_path)
-            ]
-            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=600)
-            if result.returncode == 0 and final_path.exists():
-                expected_path.unlink()
-                logger.info(f"Фрагмент перекодирован: {final_path}")
-                return final_path
-            else:
-                logger.warning(f"Перекодирование не удалось: {result.stderr}")
-                return expected_path
+            # Перекодируем только если нужно
+            if needs_reencode:
+                logger.info("Перекодирую в совместимый формат для мобильных устройств...")
+                final_path = DOWNLOAD_DIR / f"video_{safe_timestamp}_final.mp4"
+                ffmpeg_cmd = [
+                    'ffmpeg',
+                    '-i', str(expected_path),
+                    '-c:v', 'libx264',
+                    '-preset', 'veryslow',  # Максимальное качество
+                    '-crf', '13',  # Еще выше качество (13 - почти без потерь)
+                    '-c:a', 'aac',
+                    '-b:a', '320k',  # Максимальный битрейт аудио
+                    '-movflags', '+faststart',
+                    '-pix_fmt', 'yuv420p',
+                    '-y',
+                    str(final_path)
+                ]
+                result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=900)
+                if result.returncode == 0 and final_path.exists():
+                    expected_path.unlink()
+                    logger.info(f"Фрагмент перекодирован: {final_path}")
+                    return final_path
+                else:
+                    logger.warning(f"Перекодирование не удалось: {result.stderr}")
+            
+            # Если не нужно перекодирование, возвращаем исходный файл
+            logger.info("Используем исходный файл без перекодирования")
+            return expected_path
         
         # Ищем файл с любым расширением и перекодируем в совместимый формат
         for ext in ['.mp4', '.mkv', '.webm', '.m4a']:
