@@ -164,29 +164,75 @@ def download_video_segment(url: str, start_time: str, end_time: str) -> Path | N
                 else:
                     logger.error(f"Ошибка при перекодировании: {result.stderr}")
             
-            # Если файл нормального размера, все равно перекодируем для совместимости
+            # Если файл нормального размера, проверяем длительность через ffprobe
+            logger.info("Проверяю длительность файла...")
+            
+            # Проверяем длительность через ffprobe
+            probe_cmd = [
+                'ffprobe',
+                '-v', 'error',
+                '-show_entries', 'format=duration',
+                '-of', 'default=noprint_wrappers=1:nokey=1',
+                str(expected_path)
+            ]
+            probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
+            
+            if probe_result.returncode == 0:
+                try:
+                    actual_duration = float(probe_result.stdout.strip())
+                    logger.info(f"Длительность файла: {actual_duration:.2f} секунд, ожидалось: {duration} секунд")
+                    
+                    # Если длительность намного больше ожидаемой (больше чем в 2 раза), значит скачался весь файл
+                    if actual_duration > duration * 2:
+                        logger.warning(f"Файл слишком длинный ({actual_duration:.2f}s vs {duration}s), обрезаю...")
+                        # Обрезаем файл
+                        final_path = DOWNLOAD_DIR / f"video_{safe_timestamp}_final.mp4"
+                        ffmpeg_cmd = [
+                            'ffmpeg',
+                            '-i', str(expected_path),
+                            '-ss', start_time,
+                            '-t', str(duration),
+                            '-c:v', 'libx264',
+                            '-preset', 'medium',
+                            '-crf', '18',
+                            '-c:a', 'aac',
+                            '-b:a', '192k',
+                            '-movflags', '+faststart',
+                            '-pix_fmt', 'yuv420p',
+                            '-y',
+                            str(final_path)
+                        ]
+                        result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=600)
+                        if result.returncode == 0 and final_path.exists():
+                            expected_path.unlink()
+                            logger.info(f"Фрагмент обрезан: {final_path}")
+                            return final_path
+                except (ValueError, AttributeError):
+                    logger.warning("Не удалось определить длительность файла")
+            
+            # Перекодируем для совместимости (если длительность нормальная)
             logger.info("Перекодирую в совместимый формат для мобильных устройств...")
             final_path = DOWNLOAD_DIR / f"video_{safe_timestamp}_final.mp4"
             ffmpeg_cmd = [
                 'ffmpeg',
                 '-i', str(expected_path),
-                '-c:v', 'libx264',  # H.264 для совместимости
+                '-c:v', 'libx264',
                 '-preset', 'medium',
                 '-crf', '18',
                 '-c:a', 'aac',
                 '-b:a', '192k',
                 '-movflags', '+faststart',
-                '-pix_fmt', 'yuv420p',  # Обязательно для iPhone
+                '-pix_fmt', 'yuv420p',
                 '-y',
                 str(final_path)
             ]
             result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=600)
             if result.returncode == 0 and final_path.exists():
-                expected_path.unlink()  # Удаляем исходный файл
+                expected_path.unlink()
                 logger.info(f"Фрагмент перекодирован: {final_path}")
                 return final_path
             else:
-                logger.warning(f"Перекодирование не удалось, используем исходный файл: {result.stderr}")
+                logger.warning(f"Перекодирование не удалось: {result.stderr}")
                 return expected_path
         
         # Ищем файл с любым расширением и перекодируем в совместимый формат
