@@ -382,17 +382,22 @@ async def receive_end_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
             file_size = video_path.stat().st_size
             max_size = 50 * 1024 * 1024  # 50 MB - лимит Telegram для видео
             
-            if file_size > max_size:
+            # Telegram перекодирует видео при отправке через reply_video, что ухудшает качество
+            # Отправляем как файл через reply_document для сохранения оригинального качества
+            max_size_document = 2000 * 1024 * 1024  # 2 GB - лимит Telegram для документов
+            
+            if file_size > max_size_document:
                 await status_msg.edit_text(
                     f"❌ Файл слишком большой ({file_size / 1024 / 1024:.1f} MB). "
-                    f"Максимальный размер: 50 MB"
+                    f"Максимальный размер: 2000 MB"
                 )
             else:
                 with open(video_path, 'rb') as video_file:
-                    await update.message.reply_video(
-                        video=video_file,
-                        caption=f"📹 Фрагмент {start_time}-{end_time}",
-                        supports_streaming=True
+                    # Отправляем как документ для сохранения качества
+                    await update.message.reply_document(
+                        document=video_file,
+                        filename=f"video_{start_time.replace(':', '-')}_{end_time.replace(':', '-')}.mp4",
+                        caption=f"📹 Фрагмент {start_time}-{end_time}"
                     )
                 await status_msg.delete()
             
