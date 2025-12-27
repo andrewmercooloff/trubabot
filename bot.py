@@ -107,6 +107,14 @@ def download_video_segment(url: str, start_time: str, end_time: str) -> Path | N
         'quiet': False,
         'no_warnings': False,
         'extract_flat': False,
+        # Опции для обхода блокировок YouTube
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'referer': 'https://www.youtube.com/',
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web'],  # Пробуем разные клиенты
+            }
+        },
     }
     
     try:
