@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 import yt_dlp
 
 # Загружаем переменные окружения
@@ -27,45 +27,58 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен в переменных окружения")
 
+# Состояния для диалога
+WAITING_FOR_URL, WAITING_FOR_START_TIME, WAITING_FOR_END_TIME = range(3)
 
-def normalize_time(time_str: str) -> str:
+
+def normalize_time(time_str: str) -> str | None:
     """
     Нормализует время до формата HH:MM:SS
+    Возвращает None если формат неверный
     """
-    parts = time_str.split(':')
-    if len(parts) == 2:
-        # MM:SS -> 00:MM:SS
-        return f"00:{parts[0]}:{parts[1]}"
-    elif len(parts) == 3:
-        # HH:MM:SS -> HH:MM:SS (уже нормализовано)
-        return time_str
-    return time_str
-
-
-def parse_time_segment(text: str) -> tuple[str, str] | None:
-    """
-    Парсит временной сегмент из текста.
-    Форматы: "02:21:15-02:21:50" или "2:21:15-2:21:50" или "141:15-141:50"
-    Возвращает (start_time, end_time) в формате HH:MM:SS или None
-    """
-    # Паттерн для времени в формате HH:MM:SS или MM:SS
-    time_pattern = r'(\d{1,2}:\d{2}(?::\d{2})?)-(\d{1,2}:\d{2}(?::\d{2})?)'
-    match = re.search(time_pattern, text)
+    # Убираем пробелы
+    time_str = time_str.strip()
+    
+    # Проверяем формат HH:MM:SS
+    time_pattern = r'^(\d{1,2}):(\d{2}):(\d{2})$'
+    match = re.match(time_pattern, time_str)
     
     if match:
-        start = normalize_time(match.group(1))
-        end = normalize_time(match.group(2))
-        return (start, end)
+        hours = int(match.group(1))
+        minutes = int(match.group(2))
+        seconds = int(match.group(3))
+        
+        # Проверяем валидность
+        if minutes >= 60 or seconds >= 60:
+            return None
+        
+        # Форматируем с ведущими нулями
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    
+    # Проверяем формат MM:SS
+    time_pattern_mmss = r'^(\d{1,2}):(\d{2})$'
+    match = re.match(time_pattern_mmss, time_str)
+    
+    if match:
+        minutes = int(match.group(1))
+        seconds = int(match.group(2))
+        
+        # Проверяем валидность
+        if minutes >= 60 or seconds >= 60:
+            return None
+        
+        # Форматируем как 00:MM:SS
+        return f"00:{minutes:02d}:{seconds:02d}"
+    
     return None
 
 
-def extract_url(text: str) -> str | None:
+def is_valid_youtube_url(text: str) -> bool:
     """
-    Извлекает URL YouTube из текста
+    Проверяет, является ли текст валидным URL YouTube
     """
     url_pattern = r'https?://(?:www\.)?(?:youtube\.com|youtu\.be)/[^\s]+'
-    match = re.search(url_pattern, text)
-    return match.group(0) if match else None
+    return bool(re.match(url_pattern, text.strip()))
 
 
 async def download_video_segment(url: str, start_time: str, end_time: str) -> Path | None:
@@ -119,59 +132,71 @@ async def download_video_segment(url: str, start_time: str, end_time: str) -> Pa
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
-    welcome_message = """
-🤖 Привет! Я бот для скачивания фрагментов видео с YouTube.
-
-📝 Как использовать:
-Отправь мне сообщение в формате:
-```
-URL время_начала-время_конца
-```
-
-Пример:
-```
-https://www.youtube.com/live/oxfbPqnuYac?si=DoEWSHVspA4YwhS 02:21:15-02:21:50
-```
-
-Или просто отправь команду /download с URL и временными метками.
-
-⏱️ Формат времени: HH:MM:SS или MM:SS
-"""
-    await update.message.reply_text(welcome_message)
+    await update.message.reply_text(
+        "🤖 Привет! Я бот для скачивания фрагментов видео с YouTube.\n\n"
+        "Отправь команду /download чтобы начать."
+    )
+    return ConversationHandler.END
 
 
-async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /download"""
-    if not context.args:
-        await update.message.reply_text(
-            "❌ Использование: /download <URL> <время_начала-время_конца>\n"
-            "Пример: /download https://youtube.com/watch?v=... 02:21:15-02:21:50"
-        )
-        return
+async def download_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начало диалога скачивания"""
+    await update.message.reply_text("📎 Отправь ссылку на YouTube видео:")
+    return WAITING_FOR_URL
+
+
+async def receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получение URL от пользователя"""
+    url = update.message.text.strip()
     
-    # Объединяем все аргументы
-    text = ' '.join(context.args)
-    await process_download_request(update, text)
+    if not is_valid_youtube_url(url):
+        await update.message.reply_text("❌ Это не похоже на ссылку YouTube. Попробуй еще раз:")
+        return WAITING_FOR_URL
+    
+    # Сохраняем URL в контексте
+    context.user_data['url'] = url
+    
+    await update.message.reply_text("⏱️ Отправь время начала в формате 00:00:00:")
+    return WAITING_FOR_START_TIME
 
 
-async def process_download_request(update: Update, text: str):
-    """Обрабатывает запрос на скачивание"""
-    # Извлекаем URL и временной сегмент
-    url = extract_url(text)
-    time_segment = parse_time_segment(text)
+async def receive_start_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получение времени начала"""
+    time_str = update.message.text.strip()
+    normalized_time = normalize_time(time_str)
     
-    if not url:
-        await update.message.reply_text("❌ Не найден URL YouTube в сообщении")
-        return
+    if not normalized_time:
+        await update.message.reply_text("❌ Неверный формат времени. Используй формат 00:00:00 (например, 02:21:15):")
+        return WAITING_FOR_START_TIME
     
-    if not time_segment:
-        await update.message.reply_text(
-            "❌ Не найден временной сегмент. Формат: HH:MM:SS-HH:MM:SS\n"
-            "Пример: 02:21:15-02:21:50"
-        )
-        return
+    # Сохраняем время начала
+    context.user_data['start_time'] = normalized_time
     
-    start_time, end_time = time_segment
+    await update.message.reply_text("⏱️ Отправь время конца в формате 00:00:00:")
+    return WAITING_FOR_END_TIME
+
+
+async def receive_end_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получение времени конца и начало скачивания"""
+    time_str = update.message.text.strip()
+    normalized_time = normalize_time(time_str)
+    
+    if not normalized_time:
+        await update.message.reply_text("❌ Неверный формат времени. Используй формат 00:00:00 (например, 02:21:50):")
+        return WAITING_FOR_END_TIME
+    
+    # Получаем сохраненные данные
+    url = context.user_data.get('url')
+    start_time = context.user_data.get('start_time')
+    end_time = normalized_time
+    
+    # Проверяем, что время конца больше времени начала
+    start_seconds = sum(int(x) * 60 ** (2 - i) for i, x in enumerate(start_time.split(':')))
+    end_seconds = sum(int(x) * 60 ** (2 - i) for i, x in enumerate(end_time.split(':')))
+    
+    if end_seconds <= start_seconds:
+        await update.message.reply_text("❌ Время конца должно быть больше времени начала. Попробуй еще раз:")
+        return WAITING_FOR_END_TIME
     
     # Отправляем сообщение о начале загрузки
     status_msg = await update.message.reply_text(
@@ -217,20 +242,20 @@ async def process_download_request(update: Update, text: str):
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         await status_msg.edit_text(f"❌ Произошла ошибка: {str(e)}")
+    
+    # Очищаем данные пользователя
+    context.user_data.clear()
+    
+    return ConversationHandler.END
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик обычных сообщений"""
-    text = update.message.text
-    if text and (extract_url(text) or parse_time_segment(text)):
-        await process_download_request(update, text)
-    else:
-        await update.message.reply_text(
-            "📝 Отправь мне URL YouTube и временной сегмент в формате:\n"
-            "URL время_начала-время_конца\n\n"
-            "Пример:\n"
-            "https://youtube.com/watch?v=... 02:21:15-02:21:50"
-        )
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена диалога"""
+    context.user_data.clear()
+    await update.message.reply_text("❌ Отменено.")
+    return ConversationHandler.END
+
+
 
 
 def main():
@@ -242,10 +267,20 @@ def main():
     # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
     
+    # Создаем ConversationHandler для диалога скачивания
+    download_handler = ConversationHandler(
+        entry_points=[CommandHandler("download", download_start)],
+        states={
+            WAITING_FOR_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_url)],
+            WAITING_FOR_START_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_start_time)],
+            WAITING_FOR_END_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_end_time)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("download", download_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(download_handler)
     
     # Запускаем бота
     logger.info("Бот запущен...")
