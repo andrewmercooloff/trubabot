@@ -84,17 +84,20 @@ def is_valid_youtube_url(text: str) -> bool:
 def download_video_segment(url: str, start_time: str, end_time: str) -> Path | None:
     """
     Скачивает фрагмент видео с YouTube
+    Использует ограничение качества и ffmpeg для обрезки
     """
+    import subprocess
+    
     # Формируем имя файла (безопасное для файловой системы)
     safe_timestamp = f"{start_time.replace(':', '-')}_{end_time.replace(':', '-')}"
-    output_path = DOWNLOAD_DIR / f"video_{safe_timestamp}"
+    temp_path = DOWNLOAD_DIR / f"temp_{safe_timestamp}"
+    output_path = DOWNLOAD_DIR / f"video_{safe_timestamp}.mp4"
     
-    # Опции для yt-dlp
+    # Опции для yt-dlp - ограничиваем качество для уменьшения размера
+    # Используем формат с максимальным разрешением 720p для экономии места
     ydl_opts = {
-        'format': 'bv+ba/b',
-        'outtmpl': str(output_path) + '.%(ext)s',
-        'merge_output_format': 'mkv',
-        'download_sections': f'*{start_time}-{end_time}',
+        'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
+        'outtmpl': str(temp_path) + '.%(ext)s',
         'quiet': False,
         'no_warnings': False,
         'extract_flat': False,
@@ -103,41 +106,109 @@ def download_video_segment(url: str, start_time: str, end_time: str) -> Path | N
     try:
         logger.info(f"Начинаю скачивание: URL={url}, сегмент={start_time}-{end_time}")
         
+        # Сначала скачиваем видео (может быть весь файл, но с ограниченным качеством)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         
-        logger.info(f"Скачивание завершено, ищу файл: {output_path}")
+        logger.info(f"Скачивание завершено, ищу временный файл: {temp_path}")
         
-        # Проверяем, что файл создан (yt-dlp может добавить расширение)
-        expected_path = output_path.with_suffix('.mkv')
-        if expected_path.exists():
-            logger.info(f"Найден файл: {expected_path}")
-            return expected_path
+        # Ищем скачанный файл
+        temp_file = None
+        for ext in ['.mp4', '.mkv', '.webm', '.m4a', '.flv']:
+            test_path = temp_path.with_suffix(ext)
+            if test_path.exists():
+                temp_file = test_path
+                logger.info(f"Найден временный файл: {temp_file}")
+                break
         
-        # Ищем файл с любым расширением
-        for ext in ['.mkv', '.mp4', '.webm', '.m4a']:
-            alt_path = output_path.with_suffix(ext)
-            if alt_path.exists():
-                logger.info(f"Найден файл с расширением {ext}: {alt_path}")
-                return alt_path
+        # Ищем файлы, начинающиеся с temp_
+        if not temp_file:
+            found_files = list(DOWNLOAD_DIR.glob(f"temp_{safe_timestamp}*"))
+            if found_files:
+                temp_file = found_files[0]
+                logger.info(f"Найден временный файл: {temp_file}")
         
-        # Ищем файлы, начинающиеся с нашего имени
-        found_files = list(DOWNLOAD_DIR.glob(f"video_{safe_timestamp}*"))
-        logger.info(f"Найдено файлов с паттерном: {len(found_files)}")
-        for file in found_files:
-            if file.is_file():
-                logger.info(f"Найден файл: {file}")
-                return file
+        if not temp_file or not temp_file.exists():
+            logger.error(f"Временный файл не найден: {temp_path}")
+            return None
         
-        logger.warning(f"Файл не найден после скачивания. Искал: {output_path}")
-        logger.warning(f"Содержимое директории downloads: {list(DOWNLOAD_DIR.iterdir())}")
+        # Используем ffmpeg для обрезки фрагмента
+        logger.info(f"Обрезаю видео с {start_time} до {end_time}...")
+        
+        # Вычисляем длительность
+        start_seconds = sum(int(x) * 60 ** (2 - i) for i, x in enumerate(start_time.split(':')))
+        end_seconds = sum(int(x) * 60 ** (2 - i) for i, x in enumerate(end_time.split(':')))
+        duration = end_seconds - start_seconds
+        
+        # Команда ffmpeg для обрезки
+        ffmpeg_cmd = [
+            'ffmpeg',
+            '-i', str(temp_file),
+            '-ss', start_time,
+            '-t', str(duration),
+            '-c', 'copy',  # Копируем потоки без перекодирования для скорости
+            '-avoid_negative_ts', 'make_zero',
+            '-y',  # Перезаписывать выходной файл
+            str(output_path)
+        ]
+        
+        result = subprocess.run(
+            ffmpeg_cmd,
+            capture_output=True,
+            text=True,
+            timeout=300  # Таймаут 5 минут
+        )
+        
+        if result.returncode != 0:
+            logger.error(f"Ошибка ffmpeg: {result.stderr}")
+            # Пробуем с перекодированием, если копирование не сработало
+            logger.info("Пробую с перекодированием...")
+            ffmpeg_cmd_reencode = [
+                'ffmpeg',
+                '-i', str(temp_file),
+                '-ss', start_time,
+                '-t', str(duration),
+                '-c:v', 'libx264',
+                '-c:a', 'aac',
+                '-preset', 'fast',
+                '-crf', '23',
+                '-y',
+                str(output_path)
+            ]
+            result = subprocess.run(
+                ffmpeg_cmd_reencode,
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            if result.returncode != 0:
+                logger.error(f"Ошибка ffmpeg с перекодированием: {result.stderr}")
+                return None
+        
+        # Удаляем временный файл
+        try:
+            temp_file.unlink()
+            logger.info(f"Временный файл удален: {temp_file}")
+        except Exception as e:
+            logger.warning(f"Не удалось удалить временный файл: {e}")
+        
+        if output_path.exists():
+            file_size = output_path.stat().st_size
+            logger.info(f"Фрагмент создан: {output_path}, размер: {file_size / 1024 / 1024:.2f} MB")
+            return output_path
+        else:
+            logger.error(f"Выходной файл не создан: {output_path}")
+            return None
+            
+    except subprocess.TimeoutExpired:
+        logger.error("Таймаут при обрезке видео")
         return None
     except yt_dlp.utils.DownloadError as e:
         logger.error(f"Ошибка yt-dlp при скачивании: {e}", exc_info=True)
-        raise  # Пробрасываем ошибку дальше для более детальной обработки
+        raise
     except Exception as e:
         logger.error(f"Неожиданная ошибка при скачивании: {e}", exc_info=True)
-        raise  # Пробрасываем ошибку дальше
+        raise
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
