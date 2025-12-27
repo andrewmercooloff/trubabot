@@ -93,10 +93,9 @@ def download_video_segment(url: str, start_time: str, end_time: str) -> Path | N
     temp_path = DOWNLOAD_DIR / f"temp_{safe_timestamp}"
     output_path = DOWNLOAD_DIR / f"video_{safe_timestamp}.mp4"
     
-    # Опции для yt-dlp - ограничиваем качество для уменьшения размера
-    # Используем формат с максимальным разрешением 720p для экономии места
+    # Опции для yt-dlp - максимальное качество
     ydl_opts = {
-        'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
+        'format': 'bv+ba/b',  # Лучшее видео + лучшее аудио
         'outtmpl': str(temp_path) + '.%(ext)s',
         'quiet': False,
         'no_warnings': False,
