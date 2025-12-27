@@ -140,12 +140,13 @@ def download_video_segment(url: str, start_time: str, end_time: str) -> Path | N
         duration = end_seconds - start_seconds
         
         # Команда ffmpeg для обрезки
+        # Сначала пробуем копировать потоки без перекодирования (быстро, без потери качества)
         ffmpeg_cmd = [
             'ffmpeg',
             '-i', str(temp_file),
             '-ss', start_time,
             '-t', str(duration),
-            '-c', 'copy',  # Копируем потоки без перекодирования для скорости
+            '-c', 'copy',  # Копируем потоки без перекодирования - сохраняет качество и быстро
             '-avoid_negative_ts', 'make_zero',
             '-y',  # Перезаписывать выходной файл
             str(output_path)
@@ -159,18 +160,21 @@ def download_video_segment(url: str, start_time: str, end_time: str) -> Path | N
         )
         
         if result.returncode != 0:
-            logger.error(f"Ошибка ffmpeg: {result.stderr}")
-            # Пробуем с перекодированием, если копирование не сработало
-            logger.info("Пробую с перекодированием...")
+            logger.warning(f"Копирование потоков не удалось: {result.stderr}")
+            logger.info("Пробую с перекодированием для совместимости с MP4...")
+            # Если копирование не сработало (несовместимые форматы), перекодируем
+            # Используем высокое качество: crf 18 (почти без потерь)
             ffmpeg_cmd_reencode = [
                 'ffmpeg',
                 '-i', str(temp_file),
                 '-ss', start_time,
                 '-t', str(duration),
                 '-c:v', 'libx264',
+                '-preset', 'medium',  # Баланс между скоростью и качеством
+                '-crf', '18',  # Высокое качество (18 - почти без потерь, 23 - стандартное)
                 '-c:a', 'aac',
-                '-preset', 'fast',
-                '-crf', '23',
+                '-b:a', '192k',  # Высокий битрейт аудио
+                '-movflags', '+faststart',  # Для стриминга
                 '-y',
                 str(output_path)
             ]
@@ -178,11 +182,13 @@ def download_video_segment(url: str, start_time: str, end_time: str) -> Path | N
                 ffmpeg_cmd_reencode,
                 capture_output=True,
                 text=True,
-                timeout=300
+                timeout=600  # Увеличиваем таймаут для перекодирования
             )
             if result.returncode != 0:
                 logger.error(f"Ошибка ffmpeg с перекодированием: {result.stderr}")
                 return None
+            else:
+                logger.info("Видео перекодировано в MP4 с высоким качеством")
         
         # Удаляем временный файл
         try:
