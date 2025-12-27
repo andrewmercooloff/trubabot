@@ -252,8 +252,8 @@ def download_video_segment(url: str, start_time: str, end_time: str) -> Path | N
                     'ffmpeg',
                     '-i', str(alt_path),
                     '-c:v', 'libx264',
-                    '-preset', 'medium',
-                    '-crf', '18',
+                    '-preset', 'slow',  # Медленнее, но лучше качество
+                    '-crf', '15',  # Очень высокое качество
                     '-c:a', 'aac',
                     '-b:a', '256k',  # Высокий битрейт аудио для лучшего качества
                     '-movflags', '+faststart',
