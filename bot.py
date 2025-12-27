@@ -131,12 +131,13 @@ async def download_video_segment(url: str, start_time: str, end_time: str) -> Pa
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start"""
+    """Обработчик команды /start - сразу начинает диалог"""
     await update.message.reply_text(
-        "🤖 Привет! Я бот для скачивания фрагментов видео с YouTube.\n\n"
-        "Отправь команду /download чтобы начать."
+        "🤖 Привет! Я бот для скачивания фрагментов видео с YouTube."
     )
-    return ConversationHandler.END
+    # Сразу переходим к запросу URL
+    await update.message.reply_text("📎 Отправь ссылку на YouTube видео:")
+    return WAITING_FOR_URL
 
 
 async def download_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -269,7 +270,10 @@ def main():
     
     # Создаем ConversationHandler для диалога скачивания
     download_handler = ConversationHandler(
-        entry_points=[CommandHandler("download", download_start)],
+        entry_points=[
+            CommandHandler("start", start),
+            CommandHandler("download", download_start)
+        ],
         states={
             WAITING_FOR_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_url)],
             WAITING_FOR_START_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_start_time)],
@@ -279,7 +283,6 @@ def main():
     )
     
     # Регистрируем обработчики
-    application.add_handler(CommandHandler("start", start))
     application.add_handler(download_handler)
     
     # Запускаем бота
