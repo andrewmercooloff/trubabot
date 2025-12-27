@@ -101,33 +101,43 @@ def download_video_segment(url: str, start_time: str, end_time: str) -> Path | N
     }
     
     try:
+        logger.info(f"Начинаю скачивание: URL={url}, сегмент={start_time}-{end_time}")
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
+        
+        logger.info(f"Скачивание завершено, ищу файл: {output_path}")
         
         # Проверяем, что файл создан (yt-dlp может добавить расширение)
         expected_path = output_path.with_suffix('.mkv')
         if expected_path.exists():
+            logger.info(f"Найден файл: {expected_path}")
             return expected_path
         
         # Ищем файл с любым расширением
         for ext in ['.mkv', '.mp4', '.webm', '.m4a']:
             alt_path = output_path.with_suffix(ext)
             if alt_path.exists():
+                logger.info(f"Найден файл с расширением {ext}: {alt_path}")
                 return alt_path
         
         # Ищем файлы, начинающиеся с нашего имени
-        for file in DOWNLOAD_DIR.glob(f"video_{safe_timestamp}*"):
+        found_files = list(DOWNLOAD_DIR.glob(f"video_{safe_timestamp}*"))
+        logger.info(f"Найдено файлов с паттерном: {len(found_files)}")
+        for file in found_files:
             if file.is_file():
+                logger.info(f"Найден файл: {file}")
                 return file
         
-        logger.warning(f"Файл не найден после скачивания: {output_path}")
+        logger.warning(f"Файл не найден после скачивания. Искал: {output_path}")
+        logger.warning(f"Содержимое директории downloads: {list(DOWNLOAD_DIR.iterdir())}")
         return None
     except yt_dlp.utils.DownloadError as e:
-        logger.error(f"Ошибка yt-dlp при скачивании: {e}")
-        return None
+        logger.error(f"Ошибка yt-dlp при скачивании: {e}", exc_info=True)
+        raise  # Пробрасываем ошибку дальше для более детальной обработки
     except Exception as e:
         logger.error(f"Неожиданная ошибка при скачивании: {e}", exc_info=True)
-        return None
+        raise  # Пробрасываем ошибку дальше
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -238,11 +248,30 @@ async def receive_end_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.warning(f"Не удалось удалить файл {video_path}: {e}")
         else:
-            await status_msg.edit_text("❌ Ошибка при скачивании видео. Проверьте URL и временные метки.")
+            error_details = "Не удалось скачать или найти файл после загрузки."
+            logger.error(f"Ошибка скачивания: URL={url}, start={start_time}, end={end_time}")
+            await status_msg.edit_text(
+                f"❌ Ошибка при скачивании видео.\n\n"
+                f"Возможные причины:\n"
+                f"• Неверный URL или видео недоступно\n"
+                f"• Временной сегмент выходит за пределы видео\n"
+                f"• Проблемы с доступом к YouTube\n\n"
+                f"Попробуйте еще раз с другими параметрами."
+            )
     
+    except yt_dlp.utils.DownloadError as e:
+        error_msg = str(e)
+        logger.error(f"Ошибка yt-dlp: {error_msg}")
+        await status_msg.edit_text(
+            f"❌ Ошибка при скачивании:\n{error_msg[:200]}\n\n"
+            f"Проверьте URL и попробуйте еще раз."
+        )
     except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await status_msg.edit_text(f"❌ Произошла ошибка: {str(e)}")
+        logger.error(f"Неожиданная ошибка: {e}", exc_info=True)
+        await status_msg.edit_text(
+            f"❌ Произошла ошибка: {str(e)[:200]}\n\n"
+            f"Попробуйте еще раз или обратитесь к администратору."
+        )
     
     # Очищаем данные пользователя
     context.user_data.clear()
