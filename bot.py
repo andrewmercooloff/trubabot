@@ -81,7 +81,7 @@ def is_valid_youtube_url(text: str) -> bool:
     return bool(re.match(url_pattern, text.strip()))
 
 
-async def download_video_segment(url: str, start_time: str, end_time: str) -> Path | None:
+def download_video_segment(url: str, start_time: str, end_time: str) -> Path | None:
     """
     Скачивает фрагмент видео с YouTube
     """
